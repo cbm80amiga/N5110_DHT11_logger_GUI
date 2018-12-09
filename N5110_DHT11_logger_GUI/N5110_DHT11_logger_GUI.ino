@@ -552,7 +552,7 @@ void dumpI2CFlash()
  m 1..12 4b
  y 2018-2021 2b =11b
 
- t 0.0..60.0 =600 values=10b (could be limited to 9b)
+ t -40.0..64.0 =1024 values=10b
  h 0..100  7b
 =39b
         bits
@@ -568,7 +568,7 @@ byte recBuf[5];
 
 void encodeRecord(struct LogData *data)
 {
-  int tm = data->temperature*10, y=data->year-18;
+  int tm = (data->temperature+40)*10, y=data->year-18;
   recBuf[0] = (data->hour<<3) | (data->minute>>3);
   recBuf[1] = (data->minute<<5) | data->day;
   recBuf[2] = (data->month<<4) | (y<<2) | (tm>>8);
@@ -597,13 +597,13 @@ void decodeRecord(struct LogData *data)
   data->day      = recBuf[1]&0x1f;
   data->month    = ((recBuf[2]&0xf0)>>4);
   data->year     = 18 + ((recBuf[2]>>2)&0x3);
-  data->temperature = (((recBuf[2]&0x3)<<8) | recBuf[3])/10.0;
+  data->temperature = -40.0+(((recBuf[2]&0x3)<<8) | recBuf[3])/10.0;
   data->humidity = (recBuf[4]>>1);
 }
 
 void readRecord(int addr, struct LogData *data)
 {
-  readBytes(addr,recBuf,5); // 2.5x faster
+  readBytes(addr,recBuf,5);
   decodeRecord(data);
 }
 
