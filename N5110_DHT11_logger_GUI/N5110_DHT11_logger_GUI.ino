@@ -40,8 +40,6 @@ N5110_SPI lcd(9,10,8); // RST,CS,DC
 #include "tinydig3x7sq_font.h"
 #include "small4x7_font.h"
 #include "small5x7_font.h"
-//#include "small5x7bold_font.h"
-//#include "fonts_all.h"
 
 #include <Wire.h>
 
@@ -52,7 +50,7 @@ struct LogData {
   float temperature;
 };
 
-// values stored in RTC DS1307 RAM (56 bytes in total)
+// values stored by default in RTC DS1307 RAM (56 bytes in total)
 #define REG_ADDR   0  // 0,1
 #define REG_NUM    2  // 2,3
 #define REG_LOGINT 4
@@ -62,12 +60,13 @@ struct LogData {
 #define REG_MINH   16  // 16,17,18,19,20
 #define REG_MAXH   21  // 21,22,23,24,25
 
-LogData cur,tmp,set;
-//LogData minD,maxD; // daily
-//LogData minM,maxM; // monthly
-//LogData minY,maxY; // yearly
-//LogData minT,maxT; // total
+#define REG_END    26
 
+// def - registers are stored in RTC RAM
+// ndef - registers are stored in I2C EEPROM starting from 4070
+//#define REG_IN_RTCRAM
+
+LogData cur,tmp,set;
 LogData minTemp,maxTemp;
 LogData minHum,maxHum;
 
@@ -76,7 +75,11 @@ long logTime=0;
 long lightTime=0;
 int logInterval = 30;     // in minutes
 int backlight = 10;       // in seconds
+#ifdef REG_IN_RTCRAM
 int recNumMax = 4096/5;   // 819
+#else
+int recNumMax = (4096-REG_END)/5;   // (4096-26)/5=4070/5=814
+#endif
 int recAddr=0, recNum=0;
 
 #define REAL_SLEEP_8S 9100L
@@ -109,7 +112,6 @@ void buttonInt()
   menuTime=24*1000;
   if(backlight>=BACKLIGHT_MIN) {
     lightTime = backlight*10*1000L;
-    //analogWrite(BACKLIGHT,0);
     //digitalWrite(BACKLIGHT,0);
     PORTD &= ~B01000000; // faster
   }
@@ -123,7 +125,6 @@ void readEncoderInt()
   menuTime=24*1000;
   if(backlight>=BACKLIGHT_MIN) {
     lightTime = backlight*10*1000L;
-    //analogWrite(BACKLIGHT,0);
     //digitalWrite(BACKLIGHT,0);
     PORTD &= ~B01000000; // faster
   }
@@ -287,13 +288,12 @@ char *menuTxt[] = {
   "Review logs",  // 5
   "Dump serial",  // 6
   "Show MinMax",  // 7
-  "Reset MinMax", // 8
-  "Graph Temp.",  // 9
-  "Graph Humid.", // 10
-  "Clear logs",   // 11
-  "Set clock",    // 12
-  "Log interval", // 13
-  "Backlight",    // 14
+  "Graph Temp.",  // 8
+  "Graph Humid.", // 9
+  "Clear logs",   // 10
+  "Set clock",    // 11
+  "Log interval", // 12
+  "Backlight",    // 13
 //  "EEPROM dump",  // 6
 //  "I2CFlash dmp", // 7
 //  "RTC dump",     // 8
@@ -306,23 +306,47 @@ int numScrLines = 6;
 int menuMode = 1; // -1 -> menu of options, 0..n -> option
 int oldPos = 0;
 
+int readReg(int reg)
+{
+#ifdef REG_IN_RTCRAM
+  return readRTCMem(reg);
+#else
+  return readByte(reg+4070);
+#endif
+}
+
+void writeReg(int reg, byte val)
+{
+#ifdef REG_IN_RTCRAM
+  writeRTCMem(reg,val);
+#else
+  writeByte(reg+4070,val); delay(20);
+#endif
+}
+
+
 void getCurAddr()
 {
-  recAddr = readRTCMem(REG_ADDR) + (readRTCMem(REG_ADDR+1)<<8);
-  recNum  = readRTCMem(REG_NUM)  + (readRTCMem(REG_NUM+1)<<8);
+  recAddr = readReg(REG_ADDR) + (readReg(REG_ADDR+1)<<8);
+  recNum  = readReg(REG_NUM)  + (readReg(REG_NUM+1)<<8);
 }
 
 void clearLogAddrNum()
 {
   recAddr=recNum=0;
-  writeRTCMem(REG_ADDR,0); writeRTCMem(REG_ADDR+1,0);
-  writeRTCMem(REG_NUM,0); writeRTCMem(REG_NUM+1,0);
+  //recNum=810;
+  //recAddr=recNum*5;
+  //writeReg(REG_ADDR,0); writeReg(REG_ADDR+1,0);
+  //writeReg(REG_NUM,0); writeReg(REG_NUM+1,0);
+  writeReg(REG_ADDR,recAddr&0xff); writeReg(REG_ADDR+1,recAddr>>8);
+  writeReg(REG_NUM,recNum&0xff); writeReg(REG_NUM+1,recNum>>8);
 }
 
 void setup() 
 {
   first = 1;
-  Serial.begin(9600);
+  //Serial.begin(9600);
+  Serial.begin(115200);
   Wire.begin();
   Wire.setClock(400000);  // faster
   lcd.init();
@@ -332,17 +356,19 @@ void setup()
   //CLKPR = 0x02; // 0-16MHz, 1-8MHz, 2-4MHz, 3-2MHz, ..
   initEncoder();
   numMenus = sizeof(menuTxt)/sizeof(char*);
-  //analogWrite(BACKLIGHT,0); // 0=max
-  digitalWrite(BACKLIGHT,0); // on
+ 
   // check if recAddr and recNum are valid, if not reset logger
   getCurAddr();
   if(recAddr>=recNumMax*5 || recAddr<0 || (recAddr%5)!=0 || recNum<0 || recNum>recNumMax) {
     clearLogAddrNum();
-    writeRTCMem(REG_LOGINT,30);
-    writeRTCMem(REG_LIGHT,2); // = 20s
+    writeReg(REG_LOGINT,30); // 30min
+    writeReg(REG_LIGHT,3);   // 30sec
+    first=2;
   }
-  logInterval = readRTCMem(REG_LOGINT);
-  backlight = readRTCMem(REG_LIGHT);
+
+  logInterval = readReg(REG_LOGINT);
+  backlight = readReg(REG_LIGHT);
+  if((backlight>=BACKLIGHT_MIN)) digitalWrite(BACKLIGHT,0); // on
   logTime=0;
   lightTime = backlight*10*1000L;
   readMinMax();
@@ -450,35 +476,6 @@ void showBothTempHum()
   lcd.printStr(ALIGN_LEFT, 5, buf);
 }
 
-
-void showMinMax() 
-{
-  //calcMinMax();
-  //lcd.setFont(Small5x7PL);
-  lcd.setFont(c64enh);
-  lcd.setDigitMinWd(5);
-  lcd.printStr(ALIGN_CENTER, 0, "Min/Max");
-  buf[0]=0; strcat(buf,"<"); dtostrf(minTemp.temperature,1,1,buf2); strcat(buf,buf2); //strcat(buf,"'");
-  lcd.printStr(0, 2, buf);
-  buf[0]=0; strcat(buf,">"); dtostrf(maxTemp.temperature,1,1,buf2); strcat(buf,buf2); //strcat(buf,"'");
-  lcd.printStr(0, 3, buf);
-  buf[0]=0; strcat(buf,"<"); dtostrf(minHum.humidity,1,0,buf2); strcat(buf,buf2); strcat(buf,"%");
-  lcd.printStr(0, 4, buf);
-  buf[0]=0; strcat(buf,">"); dtostrf(maxHum.humidity,1,0,buf2); strcat(buf,buf2); strcat(buf,"%");
-  lcd.printStr(0, 5, buf);
-  x=ALIGN_RIGHT;
-  lcd.setFont(TinyDig3x7SqPL);
-  lcd.setDigitMinWd(3);
-  snprintf(buf,25,"%d.%02d.%02d %02d:%02d",minTemp.day,minTemp.month,minTemp.year,minTemp.hour,minTemp.minute);
-  lcd.printStr(x, 2, buf);
-  snprintf(buf,25,"%d.%02d.%02d %02d:%02d",maxTemp.day,maxTemp.month,maxTemp.year,maxTemp.hour,maxTemp.minute);
-  lcd.printStr(x, 3, buf);
-  snprintf(buf,25,"%d.%02d.%02d %02d:%02d",minHum.day,minHum.month,minHum.year,minHum.hour,minHum.minute);
-  lcd.printStr(x, 4, buf);
-  snprintf(buf,25,"%d.%02d.%02d %02d:%02d",maxHum.day,maxHum.month,maxHum.year,maxHum.hour,maxHum.minute);
-  lcd.printStr(x, 5, buf);
-}
-
 /*
 void dumpEEPROM()
 {
@@ -550,9 +547,9 @@ void dumpI2CFlash()
 
  d 1..31 5b
  m 1..12 4b
- y 2018-2021 2b =11b
+ y 2018..2021 2b =11b
 
- t -40.0..64.0 =1024 values=10b
+ t -40.0..64.0 =1024values=10b
  h 0..100  7b
 =39b
         bits
@@ -586,8 +583,8 @@ void storeRecord(struct LogData *data)
   
   recAddr+=5;
   if(recAddr>=recNumMax*5) recAddr-=recNumMax*5;
-  writeRTCMem(REG_ADDR,recAddr&0xff); writeRTCMem(REG_ADDR+1,recAddr>>8);
-  writeRTCMem(REG_NUM,recNum&0xff); writeRTCMem(REG_NUM+1,recNum>>8);
+  writeReg(REG_ADDR,recAddr&0xff); writeReg(REG_ADDR+1,recAddr>>8);
+  writeReg(REG_NUM,recNum&0xff); writeReg(REG_NUM+1,recNum>>8);
 }
 
 void decodeRecord(struct LogData *data)
@@ -610,20 +607,20 @@ void readRecord(int addr, struct LogData *data)
 void readMinMax()
 {
   int i;
-  for(i=0;i<5;i++) recBuf[i]=readRTCMem(REG_MINT+i);
+  for(i=0;i<5;i++) recBuf[i]=readReg(REG_MINT+i);
   decodeRecord(&minTemp);
-  for(i=0;i<5;i++) recBuf[i]=readRTCMem(REG_MAXT+i);
+  for(i=0;i<5;i++) recBuf[i]=readReg(REG_MAXT+i);
   decodeRecord(&maxTemp);
-  for(i=0;i<5;i++) recBuf[i]=readRTCMem(REG_MINH+i);
+  for(i=0;i<5;i++) recBuf[i]=readReg(REG_MINH+i);
   decodeRecord(&minHum);
-  for(i=0;i<5;i++) recBuf[i]=readRTCMem(REG_MAXH+i);
+  for(i=0;i<5;i++) recBuf[i]=readReg(REG_MAXH+i);
   decodeRecord(&maxHum);
 }
 
 void storeMinMax(struct LogData *data, int memaddr)
 {
   encodeRecord(data);
-  for(int i=0;i<5;i++) writeRTCMem(memaddr+i,recBuf[i]);
+  for(int i=0;i<5;i++) writeReg(memaddr+i,recBuf[i]);
 }
 
 int handleButton()
@@ -658,16 +655,37 @@ void clearLogs()
   }
 }
 
-void resetMinMax()
+
+void showMinMax() 
 {
+  lcd.setFont(c64enh);
+  lcd.setDigitMinWd(5);
+  buf[0]=0; strcat(buf,"<"); dtostrf(minTemp.temperature,1,1,buf2); strcat(buf,buf2); //strcat(buf,"'");
+  lcd.printStr(0, 0, buf);
+  buf[0]=0; strcat(buf,">"); dtostrf(maxTemp.temperature,1,1,buf2); strcat(buf,buf2); //strcat(buf,"'");
+  lcd.printStr(0, 1, buf);
+  buf[0]=0; strcat(buf,"<"); dtostrf(minHum.humidity,1,0,buf2); strcat(buf,buf2); strcat(buf,"%");
+  lcd.printStr(0, 2, buf);
+  buf[0]=0; strcat(buf,">"); dtostrf(maxHum.humidity,1,0,buf2); strcat(buf,buf2); strcat(buf,"%");
+  lcd.printStr(0, 3, buf);
+  x=ALIGN_RIGHT;
+  lcd.setFont(TinyDig3x7SqPL);
+  lcd.setDigitMinWd(3);
+  snprintf(buf,25,"%d.%02d.%02d %02d:%02d",minTemp.day,minTemp.month,minTemp.year,minTemp.hour,minTemp.minute);
+  lcd.printStr(x, 0, buf);
+  snprintf(buf,25,"%d.%02d.%02d %02d:%02d",maxTemp.day,maxTemp.month,maxTemp.year,maxTemp.hour,maxTemp.minute);
+  lcd.printStr(x, 1, buf);
+  snprintf(buf,25,"%d.%02d.%02d %02d:%02d",minHum.day,minHum.month,minHum.year,minHum.hour,minHum.minute);
+  lcd.printStr(x, 2, buf);
+  snprintf(buf,25,"%d.%02d.%02d %02d:%02d",maxHum.day,maxHum.month,maxHum.year,maxHum.hour,maxHum.minute);
+  lcd.printStr(x, 3, buf);
+
   if(encoderPos>=2*2) encoderPos=2*2;
   int st = encoderPos/2;
-  getCurAddr();
   lcd.setFont(c64enh);
-  lcd.printStr(ALIGN_CENTER, 1, "Reset MinMax");
-  lcd.setInvert(st==0?1:0); lcd.printStr(0, 4, " NO ");
-  lcd.setInvert(st==1?1:0); lcd.printStr(23, 4, " YES ");
-  lcd.setInvert(st==2?1:0); lcd.printStr(ALIGN_RIGHT, 4, " CALC");
+  lcd.setInvert(st==0?1:0); lcd.printStr(0, 5, " OK ");
+  lcd.setInvert(st==1?1:0); lcd.printStr(23, 5, " CLR ");
+  lcd.setInvert(st==2?1:0); lcd.printStr(ALIGN_RIGHT, 5, " CALC");
   if(handleButton()) return;
   encoderPos=oldPos; 
   if(st==1) { // yes
@@ -680,7 +698,6 @@ void resetMinMax()
   }
   handleMenu();
 }
-
 
 int setMode = -1;
 int encoderMin=0,encoderMax=8*2;
@@ -803,17 +820,22 @@ void dumpLogsSER()
   getCurAddr();
   int ii,t1,t10;
   int offs = (recNum>=recNumMax) ? recAddr/5 : 0;
+  lcd.setFont(Small5x7PL);
+  lcd.setDigitMinWd(5);
   for(int i=0;i<recNum;i++) {
     ii = i+offs;
     if(ii>=recNumMax) ii-=recNumMax;
     readRecord(ii*5,&tmp);
     t1 = (int)tmp.temperature;
     t10 = tmp.temperature*10-t1*10;
-    snprintf(buf,34,"%d,%02d-%02d-%d,%02d:%02d,%d.%d,%d%%",i,tmp.day,tmp.month,tmp.year,tmp.hour,tmp.minute,t1,t10,tmp.humidity);
+    snprintf(buf,34,"%03d,%02d-%02d-%d,%02d:%02d,%d.%d,%d%%",i,tmp.day,tmp.month,tmp.year+2000,tmp.hour,tmp.minute,t1,t10,tmp.humidity);
     Serial.println(buf);
-    long v = 84L*i/recNum;
-    lcd.fillWin(0,2,v,2,0xff);
-    if(v<84) lcd.fillWin(v,2,84-v,2,0);
+    if((i&7)==0) { // refresh progress every 8 record
+      unsigned long v = 84L*i/recNum;
+      lcd.fillWin(0,3,v,2,0xff);
+      if(v<84) lcd.fillWin(v,2,84-v,2,0);
+      snprintf(buf,25,"%03d/%03d",i,recNum); lcd.printStr(ALIGN_CENTER, 1, buf);
+    }
   }
   Serial.flush();
   menuMode=-1;
@@ -830,12 +852,13 @@ void reviewLogs()
   int numPages = (recNum+4)/5;
   if(encoderPos<-numPages*2) encoderPos=-numPages*2;
   if(encoderPos>numPages*2-1) encoderPos=numPages*2-1;
-  int t1,t10,ii,st = encoderPos/2;
+  int t1,t10,i,ii,st = encoderPos/2;
   if(st<0) st=numPages+st;
   int offs = (recNum>=recNumMax) ? recAddr/5 : 0;
   
   for(int j=0;j<5;j++) {
-    ii = st*5+j+offs;
+    i = st*5+j;
+    ii = i+offs;
     if(ii>=recNumMax) ii-=recNumMax;
     readRecord(ii*5,&tmp);
     if(j==0) {
@@ -844,12 +867,12 @@ void reviewLogs()
     }
     t1 = (int)tmp.temperature;
     t10 = tmp.temperature*10-t1*10;
-    if(ii<4095/5 && ii<recNum) {
-      snprintf(buf,25,"%03d %02d:%02d %2d.%d' %2d%%",ii,tmp.hour,tmp.minute,t1,t10,tmp.humidity);
+    if(i<recNumMax && i<recNum) {
+      snprintf(buf,25,"%03d %02d:%02d %2d.%d' %2d%%",i,tmp.hour,tmp.minute,t1,t10,tmp.humidity);
       lcd.printStr(0, j+1, buf);
     } else lcd.fillWin(0, j+1, 84-3, 1, 0x00);
   }
-  snprintf(buf,25,"  %d",st); lcd.printStr(ALIGN_RIGHT, 0, buf);
+  snprintf(buf,25,"    %d",st); lcd.printStr(ALIGN_RIGHT, 0, buf);
   // slider
   int y, n = (8*5-2-4-2)*st/(numPages-1);
   scrWd = 3;
@@ -866,13 +889,12 @@ int graphStart=0;
 void drawGraph(int m)
 {
   getCurAddr();
-//recNum=500;
   if(encoderPos<0) encoderPos=0;
   curT = encoderPos;
   if(curT>=recNum) { curT=recNum-1; encoderPos=curT; }
   if(curT>=graphStart+84) graphStart=curT-84+1;
   if(curT<graphStart) graphStart=curT;
-  int x,y,t1,t10;
+  int x,y,t1,t10,ii;
   LogData c;
   int maxy = 48-16-2;
   int maxx = 84;
@@ -883,13 +905,13 @@ void drawGraph(int m)
   scrWd=84;
   scrHt=4;
   clrBuf();
+  int offs = (recNum>=recNumMax) ? recAddr/5 : 0;
   for(x=0; x<maxx; x++) {
-    readRecord((x+graphStart)*5,&tmp);
+    ii = x+graphStart+offs;
+    if(ii>=recNumMax) ii-=recNumMax;
+    readRecord(ii*5,&tmp);
     if(x+graphStart<recNum) {
-      if(m)
-        y = maxy-1-maxy*(tmp.humidity-minh2)/(maxh2-minh2);
-      else
-        y = maxy-1-maxy*(tmp.temperature-mint2)/(maxt2-mint2);
+      y = m ? maxy-1-maxy*(tmp.humidity-minh2)/(maxh2-minh2) : maxy-1-maxy*(tmp.temperature-mint2)/(maxt2-mint2);
       drawLineV(x,y,maxy);
       //drawPixel(x,y,2);
     }
@@ -951,7 +973,7 @@ void setInterval()
   if(v<84) lcd.fillWin(v,4,84-v,1,0);
   if(handleButton()) return;
   logInterval = encoderPos;
-  writeRTCMem(REG_LOGINT,logInterval);
+  writeReg(REG_LOGINT,logInterval);
   if(logTime>logInterval*60L*1000) logTime=logInterval*60L*1000;
   encoderPos = oldPos; 
 }
@@ -977,7 +999,7 @@ void setBacklight()
   if(v<84) lcd.fillWin(v,4,84-v,1,0);
   if(handleButton()) return;
   backlight = st;
-  writeRTCMem(REG_LIGHT,backlight);
+  writeReg(REG_LIGHT,backlight);
   encoderPos = oldPos; 
 }
 
@@ -1038,9 +1060,9 @@ void handleMenu()
     drawMenuSlider();
     if(readButton()) {
       setMenu(menuLine);
-      if(menuLine==13) encoderPos=logInterval; // setInterval
-      if(menuLine==14) encoderPos=backlight*2; // setBacklight
-      if(menuLine==12) { set=cur; encoderMin=0; encoderMax=8; } // setClock
+      if(menuLine==12) encoderPos=logInterval; // setInterval
+      if(menuLine==13) encoderPos=backlight*2; // setBacklight
+      if(menuLine==11) { set=cur; encoderMin=0; encoderMax=8; } // setClock
     }
   } else
   if(menuMode==0) { showClock(1);  endMenu(); } else
@@ -1051,13 +1073,12 @@ void handleMenu()
   if(menuMode==5) { reviewLogs(); endMenu(); } else
   if(menuMode==6) { dumpLogsSER(); } else
   if(menuMode==7) { showMinMax(); endMenu(); } else
-  if(menuMode==8) { resetMinMax(); endMenu(); } else
-  if(menuMode==9) { drawGraph(0); endMenu(); } else
-  if(menuMode==10) { drawGraph(1); endMenu(); } else
-  if(menuMode==11) { clearLogs(); endMenu();} else
-  if(menuMode==12) { setClock(); endMenu(); } else
-  if(menuMode==13) { setInterval(); endMenu(); } else
-  if(menuMode==14) { setBacklight(); endMenu(); } else
+  if(menuMode==8) { drawGraph(0); endMenu(); } else
+  if(menuMode==9) { drawGraph(1); endMenu(); } else
+  if(menuMode==10) { clearLogs(); endMenu();} else
+  if(menuMode==11) { setClock(); endMenu(); } else
+  if(menuMode==12) { setInterval(); endMenu(); } else
+  if(menuMode==13) { setBacklight(); endMenu(); } else
   //if(menuMode==6) { dumpEEPROM(); endMenu(); } else
   //if(menuMode==7) { dumpI2CFlash(); endMenu(); } else
   //if(menuMode==8) { dumpRTCMem(); endMenu(); } else
@@ -1082,12 +1103,10 @@ void loop()
     if(cur.humidity<minHum.humidity) { minHum=cur; storeMinMax(&minHum,REG_MINH); }
     if(cur.humidity>maxHum.humidity) { maxHum=cur; storeMinMax(&maxHum,REG_MAXH); }
     if(first) {
-      //mint=maxt=cur.temperature;
-      //minh=maxh=cur.humidity;
-      //minD=maxD=cur;
-      //minM=maxM=cur;
-      //minY=maxY=cur;
-      //minT=maxT=cur;
+      if(first==2) {
+        minTemp=maxTemp=minHum=maxHum=cur;
+        storeAllMinMax();
+      }
       first=0;
       lcd.clrScr();
     }
