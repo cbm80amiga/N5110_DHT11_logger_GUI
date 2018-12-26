@@ -1,7 +1,9 @@
 /*
   (c)2018 Pawel A. Hernik
-  YouTube video: https://youtu.be/6tiiceEf7gE
- */
+  YouTube videos:
+  https://youtu.be/6tiiceEf7gE
+  https://youtu.be/2_5eG0ge_44
+*/
 
 // *** CONNECTIONS ***
 // N5110 LCD from left:
@@ -17,7 +19,7 @@
 // DHT11 pinout from left:
 // VCC DATA NC GND
 
-// RTC DS1307 and AT24C32 EEPROM
+// RTC DS1307/DS3231 and AT24C32 EEPROM
 // I2C A4/A5
 
 #define DHT11_PIN 14
@@ -43,6 +45,22 @@ N5110_SPI lcd(9,10,8); // RST,CS,DC
 
 #include <Wire.h>
 
+
+// def - use DS3231
+// ndef - use DS1307
+#define USE_DS3231
+
+// use hw I2C
+#define USEHW 1
+
+// def - registers are stored in RTC RAM (only for DS1307)
+// ndef - registers are stored in I2C EEPROM starting from 4070
+//#define REG_IN_RTCRAM
+
+#ifdef USE_DS3231
+#undef REG_IN_RTCRAM
+#endif
+
 struct LogData {
   int hour,minute,second;
   int year,month,day,dayOfWeek;
@@ -61,10 +79,6 @@ struct LogData {
 #define REG_MAXH   21  // 21,22,23,24,25
 
 #define REG_END    26
-
-// def - registers are stored in RTC RAM
-// ndef - registers are stored in I2C EEPROM starting from 4070
-//#define REG_IN_RTCRAM
 
 LogData cur,tmp,set;
 LogData minTemp,maxTemp;
@@ -87,7 +101,6 @@ int recAddr=0, recNum=0;
 #define BACKLIGHT_MAX 11  // for always on
 #define BACKLIGHT_MIN 1   // below is always off
 
-#define USEHW 1
 #include "rtc.h"
 #include "i2cflash.h"
 
@@ -334,12 +347,12 @@ void getCurAddr()
 void clearLogAddrNum()
 {
   recAddr=recNum=0;
+  writeReg(REG_ADDR,0); writeReg(REG_ADDR+1,0);
+  writeReg(REG_NUM,0); writeReg(REG_NUM+1,0);
   //recNum=810;
   //recAddr=recNum*5;
-  //writeReg(REG_ADDR,0); writeReg(REG_ADDR+1,0);
-  //writeReg(REG_NUM,0); writeReg(REG_NUM+1,0);
-  writeReg(REG_ADDR,recAddr&0xff); writeReg(REG_ADDR+1,recAddr>>8);
-  writeReg(REG_NUM,recNum&0xff); writeReg(REG_NUM+1,recNum>>8);
+  //writeReg(REG_ADDR,recAddr&0xff); writeReg(REG_ADDR+1,recAddr>>8);
+  //writeReg(REG_NUM,recNum&0xff); writeReg(REG_NUM+1,recNum>>8);
 }
 
 void setup() 
@@ -368,10 +381,14 @@ void setup()
 
   logInterval = readReg(REG_LOGINT);
   backlight = readReg(REG_LIGHT);
-  if((backlight>=BACKLIGHT_MIN)) digitalWrite(BACKLIGHT,0); // on
+  digitalWrite(BACKLIGHT,(backlight>=BACKLIGHT_MIN)?0:1); // on
   logTime=0;
   lightTime = backlight*10*1000L;
   readMinMax();
+#ifdef USE_DS3231
+  writeRTCReg(DS3231_CONTROL,0);
+  writeRTCReg(DS3231_STATUS,0);
+#endif
 }
 
 int drawBatt(int x, int y, int wd, int perc)
@@ -423,10 +440,18 @@ void showClock(int seconds)
   lcd.printStr(x+2, 4, "V");
 }
 
+void printVal(char x, byte y, float val, byte num, const char pre, const char post)
+{
+  buf[0]=pre; dtostrf(val,1,num,buf+1); buf[strlen(buf)+1]=0; buf[strlen(buf)]=post;
+  lcd.printStr(x, y, buf);
+}
+
 void showTempOrHum(int h) 
 {  
   lcd.setFont(c64enh);
-  //if(h)lcd.printStr(ALIGN_CENTER, 0, "Humidity"); else lcd.printStr(ALIGN_CENTER, 0, "Temperature");
+#ifdef USE_DS3231
+  if(!h) printVal(ALIGN_CENTER,0,getDS3231Temp(),2,' ','\'');
+#endif
   buf[0]=0;
   strcat(buf," <"); dtostrf(h?minHum.humidity:minTemp.temperature,1,h?0:1,buf2); strcat(buf,buf2);
   strcat(buf,h?"% >":"' >"); dtostrf(h?maxHum.humidity:maxTemp.temperature,1,h?0:1,buf2); strcat(buf,buf2); strcat(buf,h?"% ":"' ");
@@ -443,19 +468,16 @@ void showTempOrHum(int h)
 
 void showBothTempHum() 
 {  
+  lcd.setFont(times_dig_16x24);
+  lcd.setDigitMinWd(17);
   snprintf(buf,10,"%d",(int)cur.temperature);
-  lcd.setFont(times_dig_16x24);
-  lcd.setDigitMinWd(17);
   x=lcd.printStr(0, 0, buf);
-  lcd.setFont(Term9x14);
-  lcd.printStr(x+0, 0, "`C");
-
   snprintf(buf,10,"%d",cur.humidity);
-  lcd.setFont(times_dig_16x24);
-  lcd.setDigitMinWd(17);
   lcd.printStr(39, 3, buf);
+
   lcd.setFont(Term9x14);
   lcd.printStr(ALIGN_RIGHT, 3, "%");
+  lcd.printStr(x+0, 0, "`C");
 
   lcd.setFont(c64enh);
   lcd.setDigitMinWd(6);
@@ -465,15 +487,13 @@ void showBothTempHum()
   lcd.setFont(Small5x7PL);
   lcd.setDigitMinWd(5);
 
-  buf[0]=0; strcat(buf,"<"); dtostrf(minTemp.temperature,1,1,buf2); strcat(buf,buf2); strcat(buf,"'");
-  lcd.printStr(ALIGN_RIGHT, 0, buf);
-  buf[0]=0; strcat(buf,">"); dtostrf(maxTemp.temperature,1,1,buf2); strcat(buf,buf2); strcat(buf,"'");
-  lcd.printStr(ALIGN_RIGHT, 1, buf);
-
-  buf[0]=0; strcat(buf,"<"); dtostrf(minHum.humidity,1,0,buf2); strcat(buf,buf2); strcat(buf,"%");
-  lcd.printStr(ALIGN_LEFT, 4, buf);
-  buf[0]=0; strcat(buf,">"); dtostrf(maxHum.humidity,1,0,buf2); strcat(buf,buf2); strcat(buf,"%");
-  lcd.printStr(ALIGN_LEFT, 5, buf);
+  printVal(ALIGN_RIGHT,0,minTemp.temperature,1,'<','\'');
+  printVal(ALIGN_RIGHT,1,maxTemp.temperature,1,'>','\'');
+#ifdef USE_DS3231
+  printVal(ALIGN_RIGHT,2,getDS3231Temp(),2,' ','\'');
+#endif
+  printVal(ALIGN_LEFT,4,minHum.humidity,0,'<','%');
+  printVal(ALIGN_LEFT,5,maxHum.humidity,0,'>','%');
 }
 
 /*
@@ -632,6 +652,12 @@ int handleButton()
   return 0;
 }
 
+int printInv(char x, byte y, char *txt, byte inv)
+{
+  lcd.setInvert(inv);
+  return lcd.printStr(x, y, txt);
+}
+
 void clearLogs()
 {
   if(encoderPos>=1*2) encoderPos=1*2;
@@ -644,8 +670,8 @@ void clearLogs()
   lcd.printStr(0, 1, buf);
   lcd.setFont(c64enh);
   lcd.printStr(ALIGN_CENTER, 3, "Delete Logs?");
-  lcd.setInvert(st?0:1); lcd.printStr(10, 5, " NO ");
-  lcd.setInvert(st?1:0); lcd.printStr(43, 5, " YES ");
+  printInv(10, 5, " NO ", st?0:1);
+  printInv(43, 5, " YES ", st?1:0);
   if(handleButton()) return;
   encoderPos=oldPos; 
   if(st>0) { // yes
@@ -660,14 +686,10 @@ void showMinMax()
 {
   lcd.setFont(c64enh);
   lcd.setDigitMinWd(5);
-  buf[0]=0; strcat(buf,"<"); dtostrf(minTemp.temperature,1,1,buf2); strcat(buf,buf2); //strcat(buf,"'");
-  lcd.printStr(0, 0, buf);
-  buf[0]=0; strcat(buf,">"); dtostrf(maxTemp.temperature,1,1,buf2); strcat(buf,buf2); //strcat(buf,"'");
-  lcd.printStr(0, 1, buf);
-  buf[0]=0; strcat(buf,"<"); dtostrf(minHum.humidity,1,0,buf2); strcat(buf,buf2); strcat(buf,"%");
-  lcd.printStr(0, 2, buf);
-  buf[0]=0; strcat(buf,">"); dtostrf(maxHum.humidity,1,0,buf2); strcat(buf,buf2); strcat(buf,"%");
-  lcd.printStr(0, 3, buf);
+  printVal(0,0,minTemp.temperature,1,'<',' ');
+  printVal(0,1,maxTemp.temperature,1,'>',' ');
+  printVal(0,2,minHum.humidity,0,'<','%');
+  printVal(0,3,maxHum.humidity,0,'>','%');
   x=ALIGN_RIGHT;
   lcd.setFont(TinyDig3x7SqPL);
   lcd.setDigitMinWd(3);
@@ -683,12 +705,12 @@ void showMinMax()
   if(encoderPos>=2*2) encoderPos=2*2;
   int st = encoderPos/2;
   lcd.setFont(c64enh);
-  lcd.setInvert(st==0?1:0); lcd.printStr(0, 5, " OK ");
-  lcd.setInvert(st==1?1:0); lcd.printStr(23, 5, " CLR ");
-  lcd.setInvert(st==2?1:0); lcd.printStr(ALIGN_RIGHT, 5, " CALC");
+  printInv(0, 5, " OK ", st==0);
+  printInv(23, 5, " CLR ", st==1);
+  printInv(ALIGN_RIGHT, 5, " CALC", st==2);
   if(handleButton()) return;
   encoderPos=oldPos; 
-  if(st==1) { // yes
+  if(st==1) { // clr
     minTemp=maxTemp=minHum=maxHum=cur;
     storeAllMinMax();
   } else if(st==2) { // calc
@@ -725,30 +747,23 @@ void setClock()
   }
   
   x=10;
-  snprintf(buf,10,"%02d",set.hour);
-  lcd.setInvert(st==0?1:0); x=lcd.printStr(x, 0, buf);
-  lcd.setInvert(0);  x=lcd.printStr(x, 0, ":");
-  snprintf(buf,10,"%02d",set.minute);
-  lcd.setInvert(st==1?1:0); x=lcd.printStr(x, 0, buf);
-  lcd.setInvert(0); x=lcd.printStr(x, 0, ":");
-  snprintf(buf,10,"%02d",set.second);
-  lcd.setInvert(st==2?1:0); x=lcd.printStr(x, 0, buf);
+  snprintf(buf,10,"%02d",set.hour); x=printInv(x, 0, buf, st==0);
+  x=printInv(x, 0, ":", 0);
+  snprintf(buf,10,"%02d",set.minute); x=printInv(x, 0, buf, st==1);
+  x=printInv(x, 0, ":", 0);
+  snprintf(buf,10,"%02d",set.second); x=printInv(x, 0, buf, st==2);
 
   x=10;
-  snprintf(buf,10,"%02d",set.day);
-  lcd.setInvert(st==3?1:0); x=lcd.printStr(x, 2, buf);
-  lcd.setInvert(0); x=lcd.printStr(x, 2, ".");
-  snprintf(buf,10,"%02d",set.month);
-  lcd.setInvert(st==4?1:0); x=lcd.printStr(x, 2, buf);
-  lcd.setInvert(0); x=lcd.printStr(x, 2, ".");
-  snprintf(buf,10,"%02d",set.year);
-  lcd.setInvert(st==5?1:0); x=lcd.printStr(x, 2, buf);
+  snprintf(buf,10,"%02d",set.day); x=printInv(x, 2, buf, st==3);
+  x=printInv(x, 2, ".", 0);
+  snprintf(buf,10,"%02d",set.month); x=printInv(x, 2, buf, st==4);
+  x=printInv(x, 2, ".", 0);
+  snprintf(buf,10,"%02d",set.year); x=printInv(x, 2, buf, st==5);
 
-  lcd.setInvert(st==6?1:0); snprintf(buf,10," %s ",dowTxt[set.dayOfWeek]);
-  lcd.printStr(ALIGN_CENTER, 3, buf);
+  snprintf(buf,10," %s ",dowTxt[set.dayOfWeek]); printInv(ALIGN_CENTER, 3, buf, st==6);
   lcd.setCharMinWd(2);
-  lcd.setInvert(st==7?1:0); lcd.printStr(ALIGN_LEFT, 5, " CANCEL ");
-  lcd.setInvert(st==8?1:0); lcd.printStr(ALIGN_RIGHT, 5, " SET ");
+  printInv(ALIGN_LEFT, 5, " CANCEL ", st==7);
+  printInv(ALIGN_RIGHT, 5, " SET ", st==8);
   lcd.setInvert(0);
 
   if(readButton()<=0) return;
@@ -767,10 +782,10 @@ void setClock()
       case 0: encoderMax=23; encoderPos=set.hour; break;
       case 1: encoderMax=59; encoderPos=set.minute; break;
       case 2: encoderMax=59; encoderPos=set.second; break;
-      case 3: encoderMax=31; encoderMin=1; encoderPos=set.day; break;
-      case 4: encoderMax=12; encoderMin=1; encoderPos=set.month; break;
+      case 3: encoderMax=31; encoderMin=1;  encoderPos=set.day; break;
+      case 4: encoderMax=12; encoderMin=1;  encoderPos=set.month; break;
       case 5: encoderMax=21; encoderMin=18; encoderPos=set.year; break;
-      case 6: encoderMax=7;  encoderMin=1; encoderPos=set.dayOfWeek; break;
+      case 6: encoderMax=7;  encoderMin=1;  encoderPos=set.dayOfWeek; break;
     }
     encoderPos*=2;
     return;
