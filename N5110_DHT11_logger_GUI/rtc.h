@@ -1,6 +1,3 @@
-//#define BCD2DEC(x) ((x)>>4)*10+((x)&0xf)
-//#define DEC2BCD(x) ((x)/10)<<4+((x)%10)
-
 int BCD2DEC(int x) { return ((x)>>4)*10+((x)&0xf); }
 int DEC2BCD(int x) { return (((x)/10)<<4)+((x)%10); }
 
@@ -22,11 +19,16 @@ int DEC2BCD(int x) { return (((x)/10)<<4)+((x)%10); }
 #define I2CReady
 #endif
 
-#define DS1307_I2C_ADDRESS 0x68
+#define DS1307_I2C_ADDRESS 0x68  // same for DS3231
 #define DS1307_TIME    0x00
 #define DS1307_DOW     0x03
 #define DS1307_DATE    0x04
 #define DS1307_MEM     0x08
+
+#define DS3231_I2C_ADDRESS 0x68
+#define DS3231_CONTROL 0x0e
+#define DS3231_STATUS  0x0f
+#define DS3231_TEMP    0x11
 
 void setRTCDateTime(struct LogData *data)
 {
@@ -41,44 +43,7 @@ void setRTCDateTime(struct LogData *data)
   I2CWrite(DEC2BCD(data->year)); // year 00..99
   I2CStop();
 }
-/*
-void setRTCTime()
-{
-  I2CStart(DS1307_I2C_ADDRESS);
-  I2CWrite(DS1307_TIME);
-  I2CWrite(DEC2BCD(second));
-  I2CWrite(DEC2BCD(minute));
-  I2CWrite(DEC2BCD(hour));
-  I2CStop();
-#if DEBUG_RTC==1
-  Serial.print("SetTime: ");Serial.print(hour);Serial.print(":");Serial.print(minute);Serial.print(":");Serial.println(second);
-#endif
-}
 
-void setRTCDate()
-{
-  I2CStart(DS1307_I2C_ADDRESS);
-  I2CWrite(DS1307_DATE);
-  I2CWrite(DEC2BCD(day));
-  I2CWrite(DEC2BCD(month));
-  I2CWrite(DEC2BCD(year-2000));
-  I2CStop();
-#if DEBUG_RTC==1
-  Serial.print("SetDate: ");Serial.print(day);Serial.print("-");Serial.print(month);Serial.print("-");Serial.println(year);
-#endif
-}
-
-void setRTCDoW()
-{
-  I2CStart(DS1307_I2C_ADDRESS);
-  I2CWrite(DS1307_DOW);
-  I2CWrite(DEC2BCD(dayOfWeek));
-  I2CStop();
-#if DEBUG_RTC==1
-  Serial.print("SetDoW: ");Serial.println(dayOfWeek);
-#endif
-}
-*/
 void getRTCDateTime(struct LogData *data)
 {
   I2CStart(DS1307_I2C_ADDRESS);
@@ -104,6 +69,28 @@ void getRTCDateTime(struct LogData *data)
 #endif
 }
 
+float getDS3231Temp()
+{
+  I2CStart(DS3231_I2C_ADDRESS);
+  I2CWrite(DS3231_TEMP);
+  I2CStop();
+  I2CReq(DS1307_I2C_ADDRESS, 2);
+  I2CReady;
+  int msb = I2CRead()<<2;
+  int lsb = I2CRead()>>6;
+  I2CStop();
+  return (msb | lsb)/4.0;
+}
+
+void writeRTCReg(byte addr, byte val)
+{
+  I2CStart(DS3231_I2C_ADDRESS);
+  I2CWrite(addr);
+  I2CWrite(val);
+  I2CStop();
+}
+
+// for DS1307 only
 void writeRTCMem(byte addr, byte val)
 {
   if(addr>56) return;
